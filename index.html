@@ -18,13 +18,38 @@
   button:focus-visible, label.file:focus-within { outline: 3px solid var(--accent); outline-offset: 2px; }
   button:active { transform: translateY(1px); }
   input[type=file] { position: absolute; opacity: 0; width: 1px; height: 1px; }
-  .screen { background: #000; border: 3px solid #000; outline: 2px solid #3d4452; aspect-ratio: 4 / 3; width: 100%; display: grid; place-items: center; position: relative; }
-  canvas { width: 100%; height: 100%; image-rendering: pixelated; display: block; }
+  .screen { background: #000; border: 3px solid #000; outline: 2px solid #3d4452; aspect-ratio: 4 / 3; width: 100%; position: relative; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; display: block; }
+  main > * { min-width: 0; }
   .stats { font-family: ui-monospace, monospace; color: var(--dim); min-height: 1.4em; }
   .verdict { font-size: 22px; font-weight: 600; min-height: 1.4em; }
   .verdict.good { color: var(--good); } .verdict.bad { color: var(--bad); } .verdict.wait { color: var(--accent); }
   details { color: var(--dim); font-size: 14px; }
   footer { color: var(--dim); font-size: 12px; padding: 10px 18px 20px; text-align: center; }
+  /* Touch controls: shown on phones and tablets, under the picture */
+  /* D-pad left, A and B right, SELECT START and FULL SCREEN centred underneath */
+  .pad { display: none; grid-template-columns: auto auto; grid-template-areas: "dpad face" "mid mid"; justify-content: space-between;
+         align-items: center; row-gap: 10px; user-select: none; -webkit-user-select: none; touch-action: none; }
+  @media (pointer: coarse) { .pad { display: grid; } }
+  .dpad { grid-area: dpad; position: relative; width: 140px; height: 140px; border-radius: 50%; background: #2b303b; border: 2px solid #3d4452; touch-action: none; }
+  .dpad::before, .dpad::after { content: ""; position: absolute; background: #3d4452; border-radius: 4px; }
+  .dpad::before { left: 46px; top: 10px; width: 44px; height: 116px; }
+  .dpad::after { top: 46px; left: 10px; height: 44px; width: 116px; }
+  .dpad .dot { position: absolute; left: 57px; top: 57px; width: 22px; height: 22px; border-radius: 50%; background: #1f232c; z-index: 1; }
+  .dpad.on .dot { background: var(--accent); }
+  .mid { grid-area: mid; display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; align-items: center; }
+  .small { font-size: 12px; padding: 8px 14px; border-radius: 14px; letter-spacing: .08em; }
+  .face { grid-area: face; display: grid; grid-template-columns: 62px 62px; grid-template-rows: 62px 62px; gap: 6px; }
+  .round { width: 62px; height: 62px; border-radius: 50%; font-weight: 700; font-size: 20px; padding: 0; touch-action: none; }
+  .round.a { grid-column: 2; grid-row: 1; background: #8a2b2b; border-color: #b04040; }
+  .round.b { grid-column: 1; grid-row: 2; background: #8a2b2b; border-color: #b04040; }
+  .round.x, .round.y { display: none; }
+  .snes .round.x { display: block; grid-column: 1; grid-row: 1; }
+  .snes .round.y { display: block; grid-column: 2; grid-row: 2; }
+  .pad button { -webkit-tap-highlight-color: transparent; outline: none; }
+  .pad button.held { background: var(--accent); color: #000; }
+  .shoulders { display: none; gap: 10px; }
+  .snes .shoulders { display: flex; }
   a { color: var(--accent); }
 </style>
 </head>
@@ -40,9 +65,24 @@
   </div>
   <div class="verdict" id="verdict"></div>
   <div class="screen"><canvas id="screen" width="256" height="224"></canvas></div>
+  <div class="pad" id="pad">
+    <div class="dpad" id="dpad"><div class="dot"></div></div>
+    <div class="mid">
+      <div class="shoulders"><button class="small" data-bit="10">L</button><button class="small" data-bit="11">R</button></div>
+      <button class="small" data-bit="2">SELECT</button><button class="small" data-bit="3">START</button>
+      <button class="small" id="full">FULL SCREEN</button>
+    </div>
+    <div class="face">
+      <button class="round x" data-bit="9">X</button>
+      <button class="round a" data-bit="8">A</button>
+      <button class="round b" data-bit="0">B</button>
+      <button class="round y" data-bit="1">Y</button>
+    </div>
+  </div>
   <div class="stats" id="stats">Load a test cartridge, or a game file you copied from a cartridge you own.</div>
   <details>
     <summary>Keys and what the numbers mean</summary>
+    <p>On a phone or tablet, touch buttons appear under the picture: a D-pad you can slide your thumb around, SELECT, START, B and A (SNES adds X, Y, L and R). FULL SCREEN hides the browser's bars.</p>
     <p>Keyboard or TV remote: arrows move, Enter is Start, Shift is Select, Z is B, X is A. SNES also has A for Y, S for X, and Q and W for the shoulder buttons.</p>
     <p>NES game files end in .nes (or .unf); SNES files in .sfc or .smc. The page picks the right emulator by the file. Multi-game cartridges (such as a 42-in-1) work when the copy was made with the cartridge's own board type.</p>
     <p>The speed test runs the emulator flat out for 10 seconds without drawing, then reports how many times faster than a real console this device is. 100% is just enough; 150% or more leaves room for the picture, the sound and busier games.</p>
@@ -86,6 +126,54 @@ function key(e, down) {
 addEventListener("keydown", e => key(e, true));
 addEventListener("keyup", e => key(e, false));
 
+// ---- Touch controls ----
+function setBit(bit, down) {
+  pad = down ? pad | (1 << bit) : pad & ~(1 << bit);
+  if (emu) emu._rp_pad(pad);
+}
+for (const b of document.querySelectorAll("#pad button[data-bit]")) {
+  const bit = Number(b.dataset.bit);
+  const press = e => { e.preventDefault(); b.setPointerCapture?.(e.pointerId); b.classList.add("held"); setBit(bit, true); navigator.vibrate?.(8); };
+  const release = e => { e.preventDefault(); b.classList.remove("held"); setBit(bit, false); };
+  b.addEventListener("pointerdown", press);
+  b.addEventListener("pointerup", release);
+  b.addEventListener("pointercancel", release);
+  b.addEventListener("lostpointercapture", release);
+}
+// The D-pad follows the thumb: up, down, left, right and the diagonals between them
+const dpad = $("dpad");
+let dpadBits = 0;
+function aim(e) {
+  const r = dpad.getBoundingClientRect();
+  const dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+  const dead = r.width * 0.12;
+  let bits = 0;
+  if (Math.hypot(dx, dy) > dead) {
+    const a = Math.atan2(dy, dx) * 180 / Math.PI;   // 0 = right, 90 = down
+    if (a > -67.5 && a < 67.5) bits |= 1 << 7;     // right
+    if (a > 22.5 && a < 157.5) bits |= 1 << 5;     // down
+    if (a > 112.5 || a < -112.5) bits |= 1 << 6;   // left
+    if (a > -157.5 && a < -22.5) bits |= 1 << 4;   // up
+  }
+  if (bits !== dpadBits) {
+    pad = (pad & ~dpadBits) | bits;
+    dpadBits = bits;
+    if (emu) emu._rp_pad(pad);
+    if (bits) navigator.vibrate?.(5);
+  }
+  dpad.classList.toggle("on", bits !== 0);
+}
+dpad.addEventListener("pointerdown", e => { e.preventDefault(); dpad.setPointerCapture(e.pointerId); aim(e); });
+dpad.addEventListener("pointermove", e => { if (dpad.hasPointerCapture(e.pointerId)) aim(e); });
+const dpadOff = () => { pad &= ~dpadBits; dpadBits = 0; dpad.classList.remove("on"); if (emu) emu._rp_pad(pad); };
+dpad.addEventListener("pointerup", dpadOff);
+dpad.addEventListener("pointercancel", dpadOff);
+$("full").onclick = () => {
+  const d = document;
+  if (d.fullscreenElement) d.exitFullscreen?.();
+  else d.documentElement.requestFullscreen?.().catch(() => {});
+};
+
 function script(src) {
   return new Promise((ok, fail) => {
     const s = document.createElement("script");
@@ -124,6 +212,8 @@ async function load(bytes, name, sys = systemFor(bytes, name)) {
     return;
   }
   loaded = true;
+  // SNES games get the extra X, Y, L and R buttons
+  $("pad").classList.toggle("snes", sys === SYSTEMS.snes);
   frameMs = 1000 / emu._rp_fps();
   rate = emu._rp_sample_rate() || 48000;
   $("bench").disabled = $("pause").disabled = false;

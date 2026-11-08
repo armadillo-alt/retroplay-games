@@ -11,7 +11,7 @@ than a real console the device runs. 100% is just enough; 150% or more is comfor
 needs far less than an SNES, about a third as much.
 
 ## What's here
-- `index.html` — the page: picks the emulator by the file's header or extension, draws the picture, plays the sound, reads the keys
+- `index.html` — the page: picks the emulator by the file's header or extension, draws the picture, plays the sound, reads the keys; on phones and tablets it shows touch controls (a D-pad you slide your thumb around, SELECT, START, B and A, plus X, Y, L and R for SNES) and a FULL SCREEN key
 - `fceumm.js`, `fceumm.wasm` — FCEUmm, the NES emulator (wide support for multi-game cartridge boards)
 - `supafaust.js`, `supafaust.wasm` — Beetle Supafaust, the SNES emulator
 - `src/frontend.c` — a small libretro frontend, built once per emulator: runs a frame, hands over the picture (RGBA), the sound (16-bit stereo, 48 kHz) and takes the pad as a bitmask; gives cores the game from memory
