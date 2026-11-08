@@ -4,7 +4,7 @@
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 export EMCC_CFLAGS="-fwasm-exceptions"
-EXPORTS='["_malloc","_free","_rp_init","_rp_load","_rp_run","_rp_reset","_rp_pad","_rp_picture","_rp_width","_rp_height","_rp_sound","_rp_sound_frames","_rp_fps","_rp_sample_rate","_rp_save_data","_rp_save_size"]'
+EXPORTS='["_malloc","_free","_rp_init","_rp_load","_rp_run","_rp_reset","_rp_pad","_rp_picture","_rp_width","_rp_height","_rp_sound","_rp_sound_frames","_rp_fps","_rp_sample_rate","_rp_save_data","_rp_save_size","_rp_state_size","_rp_state_save","_rp_state_load"]'
 link_opts() {
   echo -s MODULARIZE=1 -s EXPORT_NAME=$1 -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=67108864 -s ENVIRONMENT=web,node \
     -s "EXPORTED_FUNCTIONS=$EXPORTS" '-s EXPORTED_RUNTIME_METHODS=["HEAPU8","HEAP16","HEAPU32"]'

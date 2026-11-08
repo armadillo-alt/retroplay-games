@@ -40,9 +40,15 @@
  *               {t:"sram", d}            saved progress for this game, base64 (optional)
  *               {t:"go"}                 everything is here: start
  *               {t:"p", b}               the pad as a bitmask (libretro joypad bits)
+ *               {t:"state", i, n, d}     piece i of n of a save state to start from (optional, before go)
+ *               {t:"snap"}               pause and send the machine's state back, to move the game
  *               {t:"pause"} {t:"resume"} {t:"reset"} {t:"quit"}
  *   TV → phone  {t:"ready", name, system}  {t:"error", msg}  {t:"sram", d}  {t:"got", i}
+ *               {t:"state", i, n, d}     the state asked for by snap, in pieces
  * Cast receivers may not keep data, so saves go back to the phone, which keeps them.
+ *
+ * Retroplay also runs this page on the phone's own TV, in a WebView, as receiver.html?app:
+ * messages then come through window.rpReceive and go back through window.RetroplayHost.
  */
 const NS = "urn:x-cast:studio.setout.retroplay.games";
 const SYSTEMS = {
@@ -55,11 +61,15 @@ let receiver = null, sender = null;
 let emu = null, system = null, running = false, paused = false, pad = 0;
 let audio = null, nextAudio = 0, rate = 48000, image = null;
 let frameMs = 1000 / 60.0988, lastTime = 0, owed = 0;
-let incoming = null, sramIn = null, lastSram = "";
+let incoming = null, sramIn = null, lastSram = "", stateIn = null;
+/** Raw bytes per state piece going back; 36 KB is 48 KB of base64, under Cast's 64 KB message cap. */
+const PIECE = 36 * 1024;
+const host = window.RetroplayHost || null;
 
 function send(obj) {
   const text = JSON.stringify(obj);
   if (receiver) { try { receiver.sendCustomMessage(NS, sender || undefined, text); } catch (e) {} }
+  if (host) { try { host.send(text); } catch (e) {} }
   if (window.rpSent) window.rpSent.push(obj);
 }
 
@@ -113,9 +123,7 @@ async function start() {
   const job = incoming;
   incoming = null;
   if (!job || job.got !== job.chunks) { send({ t: "error", msg: "The game arrived incomplete." }); return; }
-  const bytes = new Uint8Array(job.size);
-  let at = 0;
-  for (const part of job.parts) { bytes.set(part, at); at += part.length; }
+  const bytes = joined(job.parts);
   running = false;
   system = SYSTEMS[job.system] || SYSTEMS.nes;
   show(`Starting ${job.name}…`);
@@ -137,6 +145,16 @@ async function start() {
   const size = emu._rp_save_size();
   if (sramIn && size > 0) emu.HEAPU8.set(sramIn.subarray(0, size), emu._rp_save_data());
   sramIn = null;
+  // A save state from the other screen puts the game back exactly where it was
+  const state = stateIn && stateIn.got === stateIn.n ? joined(stateIn.parts) : null;
+  stateIn = null;
+  let resumed = false;
+  if (state) {
+    const s = emu._malloc(state.length);
+    emu.HEAPU8.set(state, s);
+    resumed = !!emu._rp_state_load(s, state.length);
+    emu._free(s);
+  }
   lastSram = size > 0 ? toBase64(emu.HEAPU8.subarray(emu._rp_save_data(), emu._rp_save_data() + size)) : "";
   frameMs = 1000 / emu._rp_fps();
   rate = emu._rp_sample_rate() || 48000;
@@ -151,8 +169,31 @@ async function start() {
   lastTime = performance.now();
   owed = 0;
   requestAnimationFrame(tick);
-  banner(`${job.name} · ${system.name}`);
-  send({ t: "ready", name: job.name, system: job.system });
+  banner(resumed ? `${job.name} · carrying on` : `${job.name} · ${system.name}`);
+  send({ t: "ready", name: job.name, system: job.system, resumed });
+}
+
+function joined(parts) {
+  let n = 0;
+  for (const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  let at = 0;
+  for (const p of parts) { out.set(p, at); at += p.length; }
+  return out;
+}
+
+/** Pauses and sends the whole machine back in pieces, so the game can carry on on the other screen. */
+function snap() {
+  if (!emu || !running) { send({ t: "error", msg: "No game is running to move." }); return; }
+  setPaused(true);
+  const size = emu._rp_state_size();
+  const s = emu._malloc(size);
+  const ok = size > 0 && emu._rp_state_save(s, size);
+  const bytes = ok ? emu.HEAPU8.slice(s, s + size) : null;
+  emu._free(s);
+  if (!bytes) { send({ t: "error", msg: "This game can't be moved mid-play." }); return; }
+  const n = Math.ceil(bytes.length / PIECE);
+  for (let i = 0; i < n; i++) send({ t: "state", i, n, d: toBase64(bytes.subarray(i * PIECE, (i + 1) * PIECE)) });
 }
 
 function startAudio() {
@@ -231,6 +272,7 @@ function receive(m, from) {
     case "load":
       incoming = { system: m.system, name: m.name || "game", size: m.size, chunks: m.chunks, got: 0, parts: new Array(m.chunks) };
       sramIn = null;
+      stateIn = null;
       running = false;
       show(`Receiving ${incoming.name}…`, 0);
       break;
@@ -243,6 +285,13 @@ function receive(m, from) {
       break;
     case "sram":
       sramIn = fromBase64(m.d);
+      break;
+    case "state":
+      if (!stateIn || stateIn.n !== m.n) stateIn = { n: m.n, got: 0, parts: new Array(m.n) };
+      if (!stateIn.parts[m.i]) { stateIn.parts[m.i] = fromBase64(m.d); stateIn.got++; }
+      break;
+    case "snap":
+      snap();
       break;
     case "go":
       start();
@@ -265,7 +314,8 @@ function receive(m, from) {
 }
 
 // The Cast framework is only there on a Cast device; elsewhere ?test lets a page drive it
-const testing = new URLSearchParams(location.search).has("test");
+const query = new URLSearchParams(location.search);
+const testing = query.has("test") || query.has("app");
 if (!testing && window.cast && window.cast.framework) {
   receiver = window.cast.framework.CastReceiverContext.getInstance();
   receiver.addCustomMessageListener(NS, e => {
@@ -280,8 +330,10 @@ if (!testing && window.cast && window.cast.framework) {
   options.statusText = "Retroplay Games";
   try { receiver.start(options); } catch (e) { receiver = null; show("This page runs on a Cast device. Pick a game in Retroplay on your phone."); }
 } else {
-  window.rpSent = [];
-  window.rpReceive = m => receive(m, null);
+  // On the phone (?app) replies go to the app; in a test page (?test) they are kept for checking
+  if (!host) window.rpSent = [];
+  window.rpReceive = m => receive(typeof m === "string" ? JSON.parse(m) : m, null);
+  if (host) show("Starting…");
 }
 </script>
 </body>

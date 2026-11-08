@@ -153,3 +153,8 @@ EMSCRIPTEN_KEEPALIVE double rp_fps(void) { return av.timing.fps; }
 EMSCRIPTEN_KEEPALIVE double rp_sample_rate(void) { return av.timing.sample_rate; }
 EMSCRIPTEN_KEEPALIVE void *rp_save_data(void) { return retro_get_memory_data(RETRO_MEMORY_SAVE_RAM); }
 EMSCRIPTEN_KEEPALIVE int rp_save_size(void) { return (int)retro_get_memory_size(RETRO_MEMORY_SAVE_RAM); }
+
+/* Save states: the whole machine at this moment, so a game can move between screens mid-play */
+EMSCRIPTEN_KEEPALIVE int rp_state_size(void) { return game ? (int)retro_serialize_size() : 0; }
+EMSCRIPTEN_KEEPALIVE int rp_state_save(void *data, int size) { return game && retro_serialize(data, (size_t)size) ? 1 : 0; }
+EMSCRIPTEN_KEEPALIVE int rp_state_load(const void *data, int size) { return game && retro_unserialize(data, (size_t)size) ? 1 : 0; }
