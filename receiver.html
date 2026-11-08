@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Retroplay Games · TV</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #08090c; color: #e8e3d4; font: 28px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #stage { position: absolute; inset: 0; display: grid; place-items: center; }
+  /* The picture fills the TV's height at 4:3, sharp pixels */
+  canvas { height: 100vh; aspect-ratio: 4 / 3; image-rendering: pixelated; display: none; background: #000; }
+  .card { text-align: center; max-width: 70vw; }
+  .card b { display: block; letter-spacing: .3em; color: #ffb02e; font: 700 44px/1.2 ui-monospace, monospace; margin-bottom: 18px; }
+  .card span { color: #8d8a80; }
+  .bar { width: 40vw; height: 10px; background: #1f232c; margin: 26px auto 0; border-radius: 5px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: #ffb02e; transition: width .2s; }
+  #banner { position: absolute; left: 4vw; bottom: 5vh; padding: 12px 22px; background: rgba(8, 9, 12, .78); border-left: 4px solid #ffb02e;
+            font: 600 26px ui-monospace, monospace; letter-spacing: .08em; transition: opacity 1s; opacity: 0; }
+  #paused { position: absolute; inset: 0; display: none; place-items: center; background: rgba(0, 0, 0, .55); font: 700 60px ui-monospace, monospace; letter-spacing: .3em; color: #ffb02e; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="card" id="card"><b>RETROPLAY GAMES</b><span id="msg">Pick a game in Retroplay on your phone.</span><div class="bar" id="bar" hidden><i id="fill"></i></div></div>
+  <canvas id="screen" width="256" height="240"></canvas>
+</div>
+<div id="banner"></div>
+<div id="paused">PAUSED</div>
+<!-- The Cast framework first, so the page knows whether it is on a Cast device -->
+<script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+<script>
+"use strict";
+/*
+ * The TV end of Retroplay's Games on TV: a Cast Web Receiver that runs the NES (FCEUmm) or
+ * SNES (Beetle Supafaust) emulator while the phone sends the game and the pad.
+ *
+ * Messages on urn:x-cast:studio.setout.retroplay.games, as JSON:
+ *   phone → TV  {t:"load", system:"nes"|"snes", name, size, chunks}   a game is coming
+ *               {t:"chunk", i, d}        piece i of the game, base64
+ *               {t:"sram", d}            saved progress for this game, base64 (optional)
+ *               {t:"go"}                 everything is here: start
+ *               {t:"p", b}               the pad as a bitmask (libretro joypad bits)
+ *               {t:"pause"} {t:"resume"} {t:"reset"} {t:"quit"}
+ *   TV → phone  {t:"ready", name, system}  {t:"error", msg}  {t:"sram", d}  {t:"got", i}
+ * Cast receivers may not keep data, so saves go back to the phone, which keeps them.
+ */
+const NS = "urn:x-cast:studio.setout.retroplay.games";
+const SYSTEMS = {
+  nes: { name: "NES", script: "fceumm.js", factory: "Fceumm" },
+  snes: { name: "SNES", script: "supafaust.js", factory: "Supafaust" },
+};
+const $ = id => document.getElementById(id);
+const canvas = $("screen"), ctx = canvas.getContext("2d", { alpha: false });
+let receiver = null, sender = null;
+let emu = null, system = null, running = false, paused = false, pad = 0;
+let audio = null, nextAudio = 0, rate = 48000, image = null;
+let frameMs = 1000 / 60.0988, lastTime = 0, owed = 0;
+let incoming = null, sramIn = null, lastSram = "";
+
+function send(obj) {
+  const text = JSON.stringify(obj);
+  if (receiver) { try { receiver.sendCustomMessage(NS, sender || undefined, text); } catch (e) {} }
+  if (window.rpSent) window.rpSent.push(obj);
+}
+
+function show(msg, progress) {
+  $("card").style.display = "";
+  canvas.style.display = "none";
+  $("msg").textContent = msg;
+  $("bar").hidden = progress === undefined;
+  if (progress !== undefined) $("fill").style.width = Math.round(progress * 100) + "%";
+}
+
+function banner(text) {
+  const b = $("banner");
+  b.textContent = text;
+  b.style.opacity = 1;
+  clearTimeout(banner.t);
+  banner.t = setTimeout(() => { b.style.opacity = 0; }, 4000);
+}
+
+function loadScript(src) {
+  return new Promise((ok, fail) => {
+    const s = document.createElement("script");
+    s.src = src; s.onload = ok; s.onerror = () => fail(new Error("couldn't load " + src));
+    document.head.appendChild(s);
+  });
+}
+
+async function boot(sys) {
+  if (!sys.module) {
+    if (!window[sys.factory]) await loadScript(sys.script);
+    sys.module = await window[sys.factory]({ print: () => {}, printErr: () => {} });
+    sys.module._rp_init();
+  }
+  return sys.module;
+}
+
+function fromBase64(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function toBase64(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+async function start() {
+  const job = incoming;
+  incoming = null;
+  if (!job || job.got !== job.chunks) { send({ t: "error", msg: "The game arrived incomplete." }); return; }
+  const bytes = new Uint8Array(job.size);
+  let at = 0;
+  for (const part of job.parts) { bytes.set(part, at); at += part.length; }
+  running = false;
+  system = SYSTEMS[job.system] || SYSTEMS.nes;
+  show(`Starting ${job.name}…`);
+  try {
+    emu = await boot(system);
+  } catch (e) {
+    send({ t: "error", msg: "The emulator didn't load: " + e.message });
+    show("The emulator didn't load. Check the TV's internet connection.");
+    return;
+  }
+  const p = emu._malloc(bytes.length);
+  emu.HEAPU8.set(bytes, p);
+  if (!emu._rp_load(p, bytes.length)) {
+    send({ t: "error", msg: `${job.name} didn't load as an ${system.name} game.` });
+    show(`${job.name} didn't load as an ${system.name} game.`);
+    return;
+  }
+  // Saved progress goes into the cartridge's battery memory before the first frame
+  const size = emu._rp_save_size();
+  if (sramIn && size > 0) emu.HEAPU8.set(sramIn.subarray(0, size), emu._rp_save_data());
+  sramIn = null;
+  lastSram = size > 0 ? toBase64(emu.HEAPU8.subarray(emu._rp_save_data(), emu._rp_save_data() + size)) : "";
+  frameMs = 1000 / emu._rp_fps();
+  rate = emu._rp_sample_rate() || 48000;
+  pad = 0;
+  emu._rp_pad(0);
+  $("card").style.display = "none";
+  canvas.style.display = "block";
+  startAudio();
+  paused = false;
+  $("paused").style.display = "none";
+  running = true;
+  lastTime = performance.now();
+  owed = 0;
+  requestAnimationFrame(tick);
+  banner(`${job.name} · ${system.name}`);
+  send({ t: "ready", name: job.name, system: job.system });
+}
+
+function startAudio() {
+  if (!audio) {
+    try { audio = new AudioContext({ sampleRate: 48000 }); } catch (e) { audio = new AudioContext(); }
+  }
+  audio.resume();
+  nextAudio = 0;
+}
+
+function queueSound() {
+  const n = emu._rp_sound_frames();
+  if (!audio || n === 0) return;
+  const at = emu._rp_sound() >> 1;
+  const buf = audio.createBuffer(2, n, rate);
+  const l = buf.getChannelData(0), r = buf.getChannelData(1), h = emu.HEAP16;
+  for (let i = 0; i < n; i++) { l[i] = h[at + 2 * i] / 32768; r[i] = h[at + 2 * i + 1] / 32768; }
+  const src = audio.createBufferSource();
+  src.buffer = buf;
+  src.connect(audio.destination);
+  const now = audio.currentTime;
+  if (nextAudio < now || nextAudio > now + 0.2) nextAudio = now + 0.06;
+  src.start(nextAudio);
+  nextAudio += n / rate;
+}
+
+function draw() {
+  const w = emu._rp_width(), h = emu._rp_height();
+  if (!w || !h) return;
+  if (!image || image.width !== w || image.height !== h) {
+    canvas.width = w; canvas.height = h;
+    image = ctx.createImageData(w, h);
+  }
+  image.data.set(emu.HEAPU8.subarray(emu._rp_picture(), emu._rp_picture() + w * h * 4));
+  ctx.putImageData(image, 0, 0);
+}
+
+function tick(now) {
+  if (!running) return;
+  owed += now - lastTime;
+  lastTime = now;
+  if (owed > 250) owed = frameMs;
+  let ran = 0;
+  if (!paused) {
+    while (owed >= frameMs && ran < 3) {
+      emu._rp_run();
+      queueSound();
+      owed -= frameMs;
+      ran++;
+    }
+  } else {
+    owed = 0;
+  }
+  if (ran) draw();
+  requestAnimationFrame(tick);
+}
+
+// Battery saves go back to the phone when they change, checked every few seconds
+setInterval(() => {
+  if (!running || !emu) return;
+  const size = emu._rp_save_size();
+  if (size <= 0) return;
+  const now = toBase64(emu.HEAPU8.subarray(emu._rp_save_data(), emu._rp_save_data() + size));
+  if (now !== lastSram) { lastSram = now; send({ t: "sram", d: now }); }
+}, 4000);
+
+function setPaused(on) {
+  paused = on;
+  $("paused").style.display = on ? "grid" : "none";
+  if (audio) on ? audio.suspend() : audio.resume();
+}
+
+function receive(m, from) {
+  if (from) sender = from;
+  switch (m.t) {
+    case "load":
+      incoming = { system: m.system, name: m.name || "game", size: m.size, chunks: m.chunks, got: 0, parts: new Array(m.chunks) };
+      sramIn = null;
+      running = false;
+      show(`Receiving ${incoming.name}…`, 0);
+      break;
+    case "chunk":
+      if (!incoming || incoming.parts[m.i]) break;
+      incoming.parts[m.i] = fromBase64(m.d);
+      incoming.got++;
+      show(`Receiving ${incoming.name}…`, incoming.got / incoming.chunks);
+      send({ t: "got", i: m.i });
+      break;
+    case "sram":
+      sramIn = fromBase64(m.d);
+      break;
+    case "go":
+      start();
+      break;
+    case "p":
+      pad = m.b | 0;
+      if (emu) emu._rp_pad(pad);
+      break;
+    case "pause": setPaused(true); break;
+    case "resume": setPaused(false); break;
+    case "reset":
+      if (emu && running) { emu._rp_reset(); banner("RESET"); }
+      break;
+    case "quit":
+      running = false;
+      setPaused(false);
+      show("Pick a game in Retroplay on your phone.");
+      break;
+  }
+}
+
+// The Cast framework is only there on a Cast device; elsewhere ?test lets a page drive it
+const testing = new URLSearchParams(location.search).has("test");
+if (!testing && window.cast && window.cast.framework) {
+  receiver = window.cast.framework.CastReceiverContext.getInstance();
+  receiver.addCustomMessageListener(NS, e => {
+    let m = e.data;
+    if (typeof m === "string") { try { m = JSON.parse(m); } catch (err) { return; } }
+    receive(m, e.senderId);
+  });
+  const options = new window.cast.framework.CastReceiverOptions();
+  // A game isn't media playback, so the receiver mustn't close itself as idle, nor load players
+  options.disableIdleTimeout = true;
+  options.skipPlayersLoad = true;
+  options.statusText = "Retroplay Games";
+  try { receiver.start(options); } catch (e) { receiver = null; show("This page runs on a Cast device. Pick a game in Retroplay on your phone."); }
+} else {
+  window.rpSent = [];
+  window.rpReceive = m => receive(m, null);
+}
+</script>
+</body>
+</html>

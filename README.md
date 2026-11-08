@@ -12,6 +12,7 @@ needs far less than an SNES, about a third as much.
 
 ## What's here
 - `index.html` — the page: picks the emulator by the file's header or extension, draws the picture, plays the sound, reads the keys; on phones and tablets it shows touch controls (a D-pad you slide your thumb around, SELECT, START, B and A, plus X, Y, L and R for SNES) and a FULL SCREEN key
+- `receiver.html` — the Cast receiver for Games on TV: Retroplay on the phone sends the game in 36 KB pieces (Cast messages are capped at 64 KB), any saved progress, then the pad as a bitmask on every change; battery saves go back to the phone, since Cast receivers may not keep data. Namespace `urn:x-cast:studio.setout.retroplay.games`; `receiver.html?test` runs it in a normal browser with `rpReceive(message)` for testing
 - `fceumm.js`, `fceumm.wasm` — FCEUmm, the NES emulator (wide support for multi-game cartridge boards)
 - `supafaust.js`, `supafaust.wasm` — Beetle Supafaust, the SNES emulator
 - `src/frontend.c` — a small libretro frontend, built once per emulator: runs a frame, hands over the picture (RGBA), the sound (16-bit stereo, 48 kHz) and takes the pad as a bitmask; gives cores the game from memory
