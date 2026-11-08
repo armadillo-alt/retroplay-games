@@ -17,6 +17,16 @@
   #banner { position: absolute; left: 4vw; bottom: 5vh; padding: 12px 22px; background: rgba(8, 9, 12, .78); border-left: 4px solid #ffb02e;
             font: 600 26px ui-monospace, monospace; letter-spacing: .08em; transition: opacity 1s; opacity: 0; }
   #paused { position: absolute; inset: 0; display: none; place-items: center; background: rgba(0, 0, 0, .55); font: 700 60px ui-monospace, monospace; letter-spacing: .3em; color: #ffb02e; }
+  /* On the phone the app gives the page its size in pixels (--w, --h), because a WebView's
+     viewport can come out shorter than the view; everything is sized from those, not the viewport */
+  html.app, html.app body { width: var(--w, 100vw); height: var(--h, 100vh); }
+  html.app #stage, html.app #paused { inset: auto; left: 0; top: 0; width: var(--w, 100vw); height: var(--h, 100vh); }
+  html.app canvas { height: var(--h, 100vh); width: calc(var(--h, 100vh) * 4 / 3); aspect-ratio: auto; }
+  html.app .card { max-width: calc(var(--w, 100vw) * .8); font-size: calc(var(--h, 100vh) * .06); }
+  html.app .card b { font-size: calc(var(--h, 100vh) * .08); margin-bottom: calc(var(--h, 100vh) * .03); }
+  html.app .bar { width: calc(var(--w, 100vw) * .5); height: calc(var(--h, 100vh) * .02); margin-top: calc(var(--h, 100vh) * .04); }
+  html.app #banner { left: calc(var(--w, 100vw) * .04); bottom: auto; top: calc(var(--h, 100vh) * .82); font-size: calc(var(--h, 100vh) * .05); padding: .3em .7em; }
+  html.app #paused { font-size: calc(var(--h, 100vh) * .12); }
 </style>
 </head>
 <body>
@@ -333,7 +343,18 @@ if (!testing && window.cast && window.cast.framework) {
   // On the phone (?app) replies go to the app; in a test page (?test) they are kept for checking
   if (!host) window.rpSent = [];
   window.rpReceive = m => receive(typeof m === "string" ? JSON.parse(m) : m, null);
-  if (host) show("Starting…");
+  if (host) {
+    document.documentElement.classList.add("app");
+    show("Starting…");
+  }
+  /** The app's view size in device pixels; the page works in CSS pixels, devicePixelRatio to a pixel. */
+  window.rpSize = (w, h) => {
+    const r = window.devicePixelRatio || 1;
+    const root = document.documentElement.style;
+    root.setProperty("--w", (w / r) + "px");
+    root.setProperty("--h", (h / r) + "px");
+    send({ t: "size", view: [w, h], page: [innerWidth, innerHeight], ratio: r });
+  };
 }
 </script>
 </body>
