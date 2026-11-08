@@ -59,7 +59,7 @@
   <div class="keys">
     <button id="testNes">NES test cartridge</button>
     <button id="testSnes">SNES test cartridge</button>
-    <label class="file" tabindex="0">Pick a game file…<input id="file" type="file" accept=".nes,.unf,.unif,.sfc,.smc,.swc,.fig"></label>
+    <label class="file" tabindex="0">Pick a game file…<input id="file" type="file"></label>
     <button id="bench" disabled>Speed test (10 s)</button>
     <button id="pause" disabled>Pause</button>
   </div>
@@ -328,9 +328,18 @@ function testCart(b64, sys) {
 }
 $("testNes").onclick = () => testCart(NES_TEST_BASE64, SYSTEMS.nes);
 $("testSnes").onclick = () => testCart(TEST_CART_BASE64, SYSTEMS.snes);
+// Every file shows in the picker: Android doesn't know .nes or .sfc, and hides them if the page asks
+// for those types. A file that isn't a game gets a plain message instead.
 $("file").onchange = async e => {
   const f = e.target.files[0];
-  if (f) load(new Uint8Array(await f.arrayBuffer()), f.name);
+  if (!f) return;
+  const ext = (f.name.split(".").pop() || "").toLowerCase();
+  if (ext === "zip" || ext === "7z") {
+    $("stats").textContent = `${f.name} is a zip: open it in the Files app, tap Extract, then pick the .nes or .sfc file inside.`;
+    return;
+  }
+  load(new Uint8Array(await f.arrayBuffer()), f.name);
+  e.target.value = "";
 };
 $("bench").onclick = () => { document.activeElement?.blur(); benchmark(); };
 $("pause").onclick = () => {
