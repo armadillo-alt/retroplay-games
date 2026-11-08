@@ -1,6 +1,6 @@
 /*
- * Retroplay Games: a minimal libretro frontend for the web.
- * Drives one emulator core a frame at a time and hands the page the picture (RGBA),
+ * Retroplay Games: a minimal libretro frontend for the web, built once per emulator
+ * (Beetle Supafaust for SNES, FCEUmm for NES). Drives one core a frame at a time and hands the page the picture (RGBA),
  * the sound (16-bit stereo) and takes the pad state as a bitmask.
  * Licensed GPLv2+, like the Beetle Supafaust core it links with.
  */
@@ -10,6 +10,11 @@
 #include <emscripten.h>
 #include "libretro.h"
 
+/* The game file's extension, so a core that reads it (FCEUmm does, for the region) sees the right one */
+#ifndef GAME_EXT
+#define GAME_EXT "sfc"
+#endif
+
 static uint32_t picture[512 * 512];
 static int width, height;
 static int16_t sound[2 * 48000];
@@ -17,6 +22,7 @@ static int sound_frames;
 static uint16_t pad;
 static uint8_t *game;
 static struct retro_system_av_info av;
+static struct retro_game_info_ext ext_info;
 
 static const char *setting(const char *key)
 {
@@ -38,6 +44,11 @@ static bool environment(unsigned cmd, void *data)
         v->value = setting(v->key);
         return v->value != NULL;
     }
+    case RETRO_ENVIRONMENT_GET_GAME_INFO_EXT:
+        /* The game in memory, so cores that prefer a path (FCEUmm) don't look for a file */
+        if (!game) return false;
+        *(const struct retro_game_info_ext **)data = &ext_info;
+        return true;
     case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
         return *(enum retro_pixel_format *)data == RETRO_PIXEL_FORMAT_XRGB8888;
     case RETRO_ENVIRONMENT_GET_INPUT_BITMASKS:
@@ -112,7 +123,15 @@ EMSCRIPTEN_KEEPALIVE int rp_load(uint8_t *data, int size)
         free(game);
     }
     game = data;
-    struct retro_game_info info = { "game.sfc", game, (size_t)size, NULL };
+    memset(&ext_info, 0, sizeof ext_info);
+    ext_info.full_path = "game." GAME_EXT;
+    ext_info.dir = "";
+    ext_info.name = "game";
+    ext_info.ext = GAME_EXT;
+    ext_info.data = game;
+    ext_info.size = (size_t)size;
+    ext_info.persistent_data = true; /* the page keeps the bytes while the game runs */
+    struct retro_game_info info = { "game." GAME_EXT, game, (size_t)size, NULL };
     if (!retro_load_game(&info)) {
         free(game);
         game = NULL;
