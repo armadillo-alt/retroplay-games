@@ -1,0 +1,11 @@
+--- a/libretro.cpp	2026-11-08 16:30:37.674199793 +0200
++++ b/libretro.cpp	2026-11-08 16:30:37.675934264 +0200
+@@ -691,7 +691,7 @@
+   pipe_option("supafaust_superfx_clock_rate", "snes_faust.superfx.clock_rate");
+   pipe_option_bool("supafaust_superfx_icache", "snes_faust.superfx.icache");
+ 
+-  MDFNI_SetSetting("snes_faust.renderer", "mt");
++  pipe_option("supafaust_renderer", "snes_faust.renderer"); /* Retroplay: honour the setting, so a web page can use the single-thread renderer */
+   //
+   //
+   //
